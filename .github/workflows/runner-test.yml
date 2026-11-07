@@ -2,9 +2,7 @@ name: Runner Test
 
 # Kleiner Test, ob der Self-hosted Runner auf dem eigenen PC (WSL2) Jobs annimmt.
 on:
-  push:
-    branches: [main]
-  workflow_dispatch:
+  workflow_dispatch:   # nur noch manuell starten (Actions -> Runner Test -> Run workflow)
 
 jobs:
   hello-self-hosted:

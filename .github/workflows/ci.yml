@@ -1,0 +1,151 @@
+name: CI/CD
+
+# GitHub-Actions-Version der GitLab-Pipeline aus der Vorlesung (.gitlab-ci.yml).
+# Alle Jobs laufen auf dem Self-hosted Runner in WSL2 (Ubuntu) auf dem eigenen PC.
+#
+#   test   -> backend-test, frontend-test   (in Docker-Containern, wie "image:" in GitLab)
+#   build  -> docker-build (backend/frontend) und Push nach ghcr.io
+#   deploy -> deploy / undeploy (manuell, wie "when: manual" in GitLab)
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "Was soll nach Test und Build passieren?"
+        type: choice
+        options: [none, deploy, undeploy]
+        default: none
+
+permissions:
+  contents: read
+
+jobs:
+  # ---------------------------------------------------------------- test
+  backend-test:
+    if: inputs.action != 'undeploy'
+    runs-on: [self-hosted, linux, x64]
+    container:
+      image: ghcr.io/astral-sh/uv:python3.13-bookworm-slim
+      # Als User "bastian" (UID 1000) laufen, damit keine root-Dateien im
+      # Arbeitsordner des Runners liegen bleiben.
+      options: --user 1000:1000
+    defaults:
+      run:
+        working-directory: backend
+    env:
+      UV_LINK_MODE: copy
+    steps:
+      - uses: actions/checkout@v5
+      - run: uv sync --frozen
+      - run: uv run ruff check .
+      - run: uv run ty check
+      - run: uv run pytest --cov=app --cov-report=xml:coverage.xml --junitxml=pytest-report.xml --junit-prefix=backend
+      - name: Test- und Coverage-Reports hochladen
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-reports
+          path: |
+            backend/coverage.xml
+            backend/pytest-report.xml
+          retention-days: 7
+
+  frontend-test:
+    if: inputs.action != 'undeploy'
+    runs-on: [self-hosted, linux, x64]
+    container:
+      # Debian statt Alpine: JavaScript-Actions (checkout) brauchen glibc.
+      image: node:22-bookworm-slim
+      options: --user 1000:1000
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v5
+      - run: npm ci
+      - run: npm run build
+
+  # ---------------------------------------------------------------- build
+  docker-build:
+    needs: [backend-test, frontend-test]
+    runs-on: [self-hosted, linux, x64]
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      matrix:
+        service: [backend, frontend]
+    env:
+      SERVICE: ${{ matrix.service }}
+      GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Image bauen und nach ghcr.io pushen
+        run: |
+          IMAGE="ghcr.io/${GITHUB_REPOSITORY,,}/${SERVICE}"
+          SHA_TAG="${GITHUB_SHA::8}"
+          REF_TAG="${GITHUB_REF_NAME//\//-}"
+
+          docker build --pull \
+            --file "./${SERVICE}/Dockerfile" \
+            --tag "${IMAGE}:${SHA_TAG}" \
+            --tag "${IMAGE}:${REF_TAG}" \
+            "./${SERVICE}"
+
+          echo "${GHCR_TOKEN}" | docker login ghcr.io -u "${GITHUB_ACTOR}" --password-stdin
+          docker push "${IMAGE}:${SHA_TAG}"
+          docker push "${IMAGE}:${REF_TAG}"
+
+          if [ "${GITHUB_REF_NAME}" = "${{ github.event.repository.default_branch }}" ]; then
+            docker tag "${IMAGE}:${SHA_TAG}" "${IMAGE}:latest"
+            docker push "${IMAGE}:latest"
+          fi
+      - name: Von ghcr.io abmelden
+        if: always()
+        run: docker logout ghcr.io || true
+
+  # ---------------------------------------------------------------- deploy
+  deploy:
+    needs: docker-build
+    if: github.event_name == 'workflow_dispatch' && inputs.action == 'deploy'
+    runs-on: [self-hosted, linux, x64]
+    permissions:
+      contents: read
+      packages: read
+    environment:
+      name: local
+      url: http://localhost:3000
+    concurrency:
+      group: counter-app-local
+      cancel-in-progress: false
+    env:
+      BACKEND_PORT: "8000"
+      FRONTEND_PORT: "3000"
+      # deploy.sh erwartet die GitLab-Variablen; hier mit GitHub-Werten befuellt.
+      CI_REGISTRY: ghcr.io
+      CI_REGISTRY_USER: ${{ github.actor }}
+      CI_REGISTRY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Lokal deployen (docker compose)
+        run: |
+          export CI_REGISTRY_IMAGE="ghcr.io/${GITHUB_REPOSITORY,,}"
+          export CI_COMMIT_SHORT_SHA="${GITHUB_SHA::8}"
+          bash deploy/deploy.sh
+      - name: Laufende Container anzeigen
+        run: docker ps --filter "name=counter-app-deploy"
+      - name: Von ghcr.io abmelden
+        if: always()
+        run: docker logout ghcr.io || true
+
+  undeploy:
+    if: github.event_name == 'workflow_dispatch' && inputs.action == 'undeploy'
+    runs-on: [self-hosted, linux, x64]
+    concurrency:
+      group: counter-app-local
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v5
+      - run: bash deploy/undeploy.sh
