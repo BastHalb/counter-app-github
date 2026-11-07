@@ -1,0 +1,33 @@
+name: Runner Test
+
+# Kleiner Test, ob der Self-hosted Runner auf dem eigenen PC (WSL2) Jobs annimmt.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  hello-self-hosted:
+    runs-on: [self-hosted, linux, x64]
+    steps:
+      - run: echo "Der Job wurde durch ein ${{ github.event_name }}-Event ausgeloest."
+      - run: echo "Er laeuft auf dem Runner '${{ runner.name }}' (${{ runner.os }}/${{ runner.arch }})."
+      - run: echo "Branch ${{ github.ref_name }} im Repo ${{ github.repository }}."
+
+      - name: Repository auschecken
+        uses: actions/checkout@v4
+
+      - name: Infos zur Runner-Maschine
+        run: |
+          echo "Hostname: $(hostname)"
+          echo "User:     $(whoami)"
+          echo "Kernel:   $(uname -r)"
+          echo "Arbeitsordner: ${{ github.workspace }}"
+          ls -la "${{ github.workspace }}"
+
+      - name: Docker auf dem Runner pruefen
+        run: |
+          docker version --format 'Docker Client {{.Client.Version}} / Server {{.Server.Version}}'
+          docker run --rm hello-world | head -2
+
+      - run: echo "Job-Status ${{ job.status }}"
