@@ -82,6 +82,17 @@ jobs:
       GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - uses: actions/checkout@v5
+      - name: Eigene Docker-Login-Konfiguration fuer diesen Job
+        # Docker Desktop speichert Logins unter WSL ueber den Windows-Credential-Helper
+        # (desktop.exe). Der Job nutzt stattdessen eine eigene, temporaere config.json,
+        # die der Runner nach dem Job wieder loescht.
+        run: |
+          echo "DOCKER_CONFIG=${RUNNER_TEMP}/docker-config" >> "${GITHUB_ENV}"
+          mkdir -p "${RUNNER_TEMP}/docker-config/cli-plugins"
+          if [ -d "${HOME}/.docker/cli-plugins" ]; then
+            ln -sf "${HOME}"/.docker/cli-plugins/* "${RUNNER_TEMP}/docker-config/cli-plugins/" || true
+          fi
+          echo '{}' > "${RUNNER_TEMP}/docker-config/config.json"
       - name: Image bauen und nach ghcr.io pushen
         run: |
           IMAGE="ghcr.io/${GITHUB_REPOSITORY,,}/${SERVICE}"
@@ -129,6 +140,17 @@ jobs:
       CI_REGISTRY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - uses: actions/checkout@v5
+      - name: Eigene Docker-Login-Konfiguration fuer diesen Job
+        # Docker Desktop speichert Logins unter WSL ueber den Windows-Credential-Helper
+        # (desktop.exe). Der Job nutzt stattdessen eine eigene, temporaere config.json,
+        # die der Runner nach dem Job wieder loescht.
+        run: |
+          echo "DOCKER_CONFIG=${RUNNER_TEMP}/docker-config" >> "${GITHUB_ENV}"
+          mkdir -p "${RUNNER_TEMP}/docker-config/cli-plugins"
+          if [ -d "${HOME}/.docker/cli-plugins" ]; then
+            ln -sf "${HOME}"/.docker/cli-plugins/* "${RUNNER_TEMP}/docker-config/cli-plugins/" || true
+          fi
+          echo '{}' > "${RUNNER_TEMP}/docker-config/config.json"
       - name: Lokal deployen (docker compose)
         run: |
           export CI_REGISTRY_IMAGE="ghcr.io/${GITHUB_REPOSITORY,,}"
